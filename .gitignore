@@ -1,0 +1,19 @@
+# Build output
+build/
+
+# ESP-IDF generated files
+sdkconfig
+sdkconfig.old
+
+# Dependencies managed by ESP-IDF component manager
+managed_components/
+
+# IDE files
+.vscode/
+.idea/
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
