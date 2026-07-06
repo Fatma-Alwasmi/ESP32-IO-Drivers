@@ -82,14 +82,17 @@ static void uart_free_driver_obj(uart_driver_obj_t *uart_obj){
 esp_err_t uart_driver_dlt(uart_port_t uart_num){
 
     ESP_RETURN_ON_FALSE((uart_num < UART_NUM_MAX), ESP_FAIL, UART_TAG, "uart_num error"); 
+    // if p_uart_driver_obj[uart_num] is NULL, it means its already been freed and nullified, so no need to do anything
     if(!p_uart_driver_obj[uart_num]){
         ESP_LOGI(UART_TAG, "ALREADY NULL");
         return ESP_OK;
     }
 
+    // resets GPIO pin to default state
     gpio_reset_pin(p_uart_driver_obj[uart_num]->tx_pin);
     gpio_reset_pin(p_uart_driver_obj[uart_num]->rx_pin);
 
+    
     esp_intr_free(p_uart_driver_obj[uart_num]->intr_handle);
     uart_free_driver_obj(p_uart_driver_obj[uart_num]);
     p_uart_driver_obj[uart_num] = NULL;
