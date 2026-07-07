@@ -24,6 +24,7 @@
 #include "esp_private/gpio.h"
 #include "esp_private/esp_gpio_reserve.h"
 #include "esp_rom_gpio.h"
+#include "hal/gpio_ll.h"
 
 
 /*
@@ -185,6 +186,15 @@ esp_err_t i2c_driver_init(i2c_port_t i2c_num, i2c_driver_config_t *config_i2c){
     gpio_reset_pin(sda_pin);
     gpio_reset_pin(scl_pin);
 
+    // gpio_reset_pin leaves the output data register at 0.  If we enable the
+    // output (via gpio_set_direction) before the I2C peripheral takes over the
+    // GPIO matrix, the pad briefly drives LOW (data=0, OD mode, output enabled).
+    // That glitch on SCL/SDA disturbs the SSD1306's I2C state machine.
+    // Writing 1 to the data register first ensures the pad stays high-Z during
+    // the transition to OD output mode.
+    gpio_set_level(sda_pin, 1);
+    gpio_set_level(scl_pin, 1);
+
     gpio_set_direction(scl_pin, GPIO_MODE_INPUT_OUTPUT_OD);
     gpio_set_direction(sda_pin, GPIO_MODE_INPUT_OUTPUT_OD);
 
@@ -193,6 +203,15 @@ esp_err_t i2c_driver_init(i2c_port_t i2c_num, i2c_driver_config_t *config_i2c){
     gpio_matrix_output(sda_pin, i2c_periph_signal[i2c_num].sda_out_sig, false, false);
     gpio_matrix_input(scl_pin, i2c_periph_signal[i2c_num].scl_in_sig, false);
     gpio_matrix_output(scl_pin, i2c_periph_signal[i2c_num].scl_out_sig, false, false);
+
+    // esp_rom_gpio_connect_out_signal (called inside gpio_matrix_output on ESP32) sets oen_sel=0,
+    // meaning GPIO output-enable comes from the I2C peripheral's OEN signal via the GPIO matrix.
+    // In force_out=1 mode the I2C peripheral drives DATA but does not assert OEN through the
+    // matrix, leaving OEN=0 and the pad permanently high-Z regardless of the data signal.
+    // Switching oen_sel=1 hands OE control back to GPIO_ENABLE_REG (already set to 1 by
+    // gpio_set_direction), so the output is always enabled and I2C data drives the OD pad.
+    gpio_ll_set_output_enable_ctrl(&GPIO, sda_pin, false, false);
+    gpio_ll_set_output_enable_ctrl(&GPIO, scl_pin, false, false);
 
     // this function returns pointer to the i2c peripheral's hardware register struct (i2c_dev_t) for the given
     // port number
@@ -245,7 +264,7 @@ esp_err_t i2c_driver_write(i2c_port_t i2c_num, uint8_t slave_addr, uint8_t *buf,
 
     ESP_RETURN_ON_FALSE((i2c_num < SOC_I2C_NUM), ESP_FAIL, I2C_TAG, "i2c_num error");
     ESP_RETURN_ON_FALSE((slave_addr <= 0x7F), ESP_FAIL, I2C_TAG, "invalid slave_addr");
-    ESP_RETURN_ON_FALSE((buf != NULL), ESP_FAIL, I2C_TAG, "buf is empty");
+    ESP_RETURN_ON_FALSE((len == 0 || buf != NULL), ESP_FAIL, I2C_TAG, "buf is empty");
     ESP_RETURN_ON_FALSE((p_i2c_driver_obj[i2c_num] != NULL), ESP_FAIL, I2C_TAG, "Driver not initialized");
     i2c_obj_driver_t *i2c_obj =  p_i2c_driver_obj[i2c_num];
 
@@ -286,18 +305,33 @@ esp_err_t i2c_driver_write(i2c_port_t i2c_num, uint8_t slave_addr, uint8_t *buf,
         return ESP_ERR_TIMEOUT;
     }
 
+    i2c_intr_event_t event = i2c_obj->last_event;
+
+    // On NACK or arbitration loss the hardware aborts without executing the
+    // remaining STOP command, leaving SCL held low.  Issue STOP now so the
+    // bus is released before we return.
+    if(event == I2C_INTR_EVENT_NACK || event == I2C_INTR_EVENT_ARBIT_LOST){
+        cmd.val = 0;
+        cmd.op_code = I2C_LL_CMD_STOP;
+        i2c_ll_master_write_cmd_reg(hw, cmd, 0);
+        i2c_ll_clear_intr_mask(hw, I2C_LL_INTR_MASK);
+        i2c_ll_enable_intr_mask(hw, I2C_LL_MASTER_TX_INT);
+        i2c_ll_start_trans(hw);
+        xSemaphoreTake(i2c_obj->done_sem, pdMS_TO_TICKS(50));
+    }
+
     esp_err_t result = ESP_FAIL;
-    if(i2c_obj->last_event == I2C_INTR_EVENT_NACK){
+    if(event == I2C_INTR_EVENT_NACK){
         result = ESP_ERR_NOT_FOUND;
     }
-    else if(i2c_obj->last_event == I2C_INTR_EVENT_TOUT){
+    else if(event == I2C_INTR_EVENT_TOUT){
         ESP_LOGE("driver", "last event timeout");
         result = ESP_ERR_TIMEOUT;
     }
-    else if(i2c_obj->last_event == I2C_INTR_EVENT_ARBIT_LOST){
+    else if(event == I2C_INTR_EVENT_ARBIT_LOST){
         result = ESP_FAIL;
     }
-    else if(i2c_obj->last_event == I2C_INTR_EVENT_TRANS_DONE){
+    else if(event == I2C_INTR_EVENT_TRANS_DONE){
         result = ESP_OK;
     }
     xSemaphoreGive(i2c_obj->mutex); // release mutex
@@ -353,17 +387,29 @@ int i2c_driver_read(i2c_port_t i2c_num, uint8_t slave_addr, uint8_t *buf, size_t
         return -1;
     }
 
+    i2c_intr_event_t event = i2c_obj->last_event;
+
+    if(event == I2C_INTR_EVENT_NACK || event == I2C_INTR_EVENT_ARBIT_LOST){
+        cmd.val = 0;
+        cmd.op_code = I2C_LL_CMD_STOP;
+        i2c_ll_master_write_cmd_reg(hw, cmd, 0);
+        i2c_ll_clear_intr_mask(hw, I2C_LL_INTR_MASK);
+        i2c_ll_enable_intr_mask(hw, I2C_LL_MASTER_TX_INT);
+        i2c_ll_start_trans(hw);
+        xSemaphoreTake(i2c_obj->done_sem, pdMS_TO_TICKS(50));
+    }
+
     int result = -1;
-    if(i2c_obj->last_event == I2C_INTR_EVENT_NACK){
+    if(event == I2C_INTR_EVENT_NACK){
         result = -1;
     }
-    else if(i2c_obj->last_event == I2C_INTR_EVENT_TOUT){
+    else if(event == I2C_INTR_EVENT_TOUT){
         result = -1;
     }
-    else if(i2c_obj->last_event == I2C_INTR_EVENT_ARBIT_LOST){
+    else if(event == I2C_INTR_EVENT_ARBIT_LOST){
         result = -1;
     }
-    else if(i2c_obj->last_event == I2C_INTR_EVENT_TRANS_DONE){
+    else if(event == I2C_INTR_EVENT_TRANS_DONE){
         i2c_ll_read_rxfifo(hw, buf, len);
         result = len;
     }
