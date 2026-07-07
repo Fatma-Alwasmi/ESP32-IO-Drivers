@@ -5,67 +5,38 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-// Each entry: ASCII code + 5 column bytes (bit0 = top pixel).
-// static const struct { char c; uint8_t px[5]; } font[] = {
-//     {' ', {0x00,0x00,0x00,0x00,0x00}},
-//     {'!', {0x00,0x00,0x5F,0x00,0x00}},
-//     {'H', {0x7F,0x08,0x08,0x08,0x7F}},
-//     {'W', {0x3F,0x40,0x38,0x40,0x3F}},
-//     {'d', {0x38,0x44,0x44,0x48,0x7F}},
-//     {'e', {0x38,0x54,0x54,0x54,0x18}},
-//     {'l', {0x00,0x41,0x7F,0x40,0x00}},
-//     {'o', {0x38,0x44,0x44,0x44,0x38}},
-//     {'r', {0x7C,0x08,0x04,0x04,0x08}},
-// };
+#define INDEX(char) (((char) - 'A' + 1) * 8)
 
-// static const uint8_t *find_glyph(char c)
-// {
-//     for (size_t i = 0; i < sizeof(font) / sizeof(font[0]); i++)
-//         if (font[i].c == c) return font[i].px;
-//     return font[0].px;  // fall back to space
-// }
-
-// // Send up to 30 SSD1306 command bytes (control byte 0x00).
-// static void ssd1306_cmd(i2c_port_t num, uint8_t addr, const uint8_t *cmds, size_t n)
-// {
-//     uint8_t buf[31];
-//     buf[0] = 0x00;
-//     memcpy(buf + 1, cmds, n);
-//     i2c_driver_write(num, addr, buf, n + 1);
-// }
-
-// // Send up to 30 pixel bytes to GDDRAM (control byte 0x40).
-// static void ssd1306_data(i2c_port_t num, uint8_t addr, const uint8_t *data, size_t n)
-// {
-//     uint8_t buf[31];
-//     buf[0] = 0x40;
-//     memcpy(buf + 1, data, n);
-//     i2c_driver_write(num, addr, buf, n + 1);
-// }
-
-// // Fill all 128×64 GDDRAM bytes with value (0x00 = clear, 0xFF = all on).
-// static void ssd1306_clear(i2c_port_t num, uint8_t addr)
-// {
-//     uint8_t cmds[] = {0x21, 0, 127, 0x22, 0, 7};
-//     ssd1306_cmd(num, addr, cmds, sizeof(cmds));
-//     uint8_t zeros[31] = {0x40};  // ctrl byte + 30 zero bytes
-//     for (int i = 0; i < 1024; i += 30) {
-//         size_t chunk = ((1024 - i) > 30) ? 30 : (size_t)(1024 - i);
-//         i2c_driver_write(num, addr, zeros, chunk + 1);
-//     }
-// }
-
-// // Write a string to page row (0–7). Font is 5px + 1px gap = 21 chars/row.
-// static void ssd1306_puts(i2c_port_t num, uint8_t addr, const char *str, uint8_t page)
-// {
-//     uint8_t line[128] = {0};
-//     for (uint8_t col = 0; *str && col + 5 <= 128; col += 6, str++)
-//         memcpy(&line[col], find_glyph(*str), 5);
-//     uint8_t cmds[] = {0x21, 0, 127, 0x22, page, page};
-//     ssd1306_cmd(num, addr, cmds, sizeof(cmds));
-//     for (int i = 0; i < 128; i += 30)
-//         ssd1306_data(num, addr, &line[i], ((128 - i) > 30) ? 30 : (size_t)(128 - i));
-// }
+// reference: https://github.com/raspberrypi/pico-examples/blob/master/i2c/ssd1306_i2c/ssd1306_font.h 
+static uint8_t font[] = {
+0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Nothing
+0x78, 0x14, 0x12, 0x11, 0x12, 0x14, 0x78, 0x00, //A
+0x7f, 0x49, 0x49, 0x49, 0x49, 0x49, 0x7f, 0x00, //B
+0x7e, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x00, //C
+0x7f, 0x41, 0x41, 0x41, 0x41, 0x41, 0x7e, 0x00, //D
+0x7f, 0x49, 0x49, 0x49, 0x49, 0x49, 0x49, 0x00, //E
+0x7f, 0x09, 0x09, 0x09, 0x09, 0x01, 0x01, 0x00, //F
+0x7f, 0x41, 0x41, 0x41, 0x51, 0x51, 0x73, 0x00, //G
+0x7f, 0x08, 0x08, 0x08, 0x08, 0x08, 0x7f, 0x00, //H
+0x00, 0x00, 0x00, 0x7f, 0x00, 0x00, 0x00, 0x00, //I
+0x21, 0x41, 0x41, 0x3f, 0x01, 0x01, 0x01, 0x00, //J
+0x00, 0x7f, 0x08, 0x08, 0x14, 0x22, 0x41, 0x00, //K
+0x7f, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x00, //L
+0x7f, 0x02, 0x04, 0x08, 0x04, 0x02, 0x7f, 0x00, //M
+0x7f, 0x02, 0x04, 0x08, 0x10, 0x20, 0x7f, 0x00, //N
+0x3e, 0x41, 0x41, 0x41, 0x41, 0x41, 0x3e, 0x00, //O
+0x7f, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e, 0x00, //P
+0x3e, 0x41, 0x41, 0x49, 0x51, 0x61, 0x7e, 0x00, //Q
+0x7f, 0x11, 0x11, 0x11, 0x31, 0x51, 0x0e, 0x00, //R
+0x46, 0x49, 0x49, 0x49, 0x49, 0x30, 0x00, 0x00, //S
+0x01, 0x01, 0x01, 0x7f, 0x01, 0x01, 0x01, 0x00, //T
+0x3f, 0x40, 0x40, 0x40, 0x40, 0x40, 0x3f, 0x00, //U
+0x0f, 0x10, 0x20, 0x40, 0x20, 0x10, 0x0f, 0x00, //V
+0x7f, 0x20, 0x10, 0x08, 0x10, 0x20, 0x7f, 0x00, //W
+0x00, 0x41, 0x22, 0x14, 0x14, 0x22, 0x41, 0x00, //X
+0x01, 0x02, 0x04, 0x78, 0x04, 0x02, 0x01, 0x00, //Y
+0x41, 0x61, 0x59, 0x45, 0x43, 0x41, 0x00, 0x00, //Z
+};
 
 
 void app_main(void)
@@ -147,15 +118,37 @@ void app_main(void)
     0x2E,        // scroll off
     0xAF,        // display on
     };
+/*
+           | COL0 | COL1 | COL2 | COL3 |  ...  | COL126 | COL127 |
+    PAGE 0 |      |      |      |      |       |        |        |
+    PAGE 1 |      |      |      |      |       |        |        |
+    PAGE 2 |      |      |      |      |       |        |        |
+    PAGE 3 |      |      |      |      |       |        |        |
+    --------------------------------------------------------------
 
+        within each page:
+
+          | COL0 | COL1 | COL2 | COL3 |  ...  | COL126 | COL127 |
+    COM 0 |      |      |      |      |       |        |        |
+    COM 1 |      |      |      |      |       |        |        |
+       :  |      |      |      |      |       |        |        |
+    COM 7 |      |      |      |      |       |        |        |
+    -------------------------------------------------------------
+*/
 
     i2c_driver_write(i2c_num, slave_addr, init, sizeof(init));
 
-    // set column address 0 to 127
+    // when sending pixel data in horizontal addressing mode, the display has an internal pointer
+    // that starts at a position and automatically adcvances, we need to tell it where to start
+    // and where to end
+
+    // im doing Horizontal addressing mode, speified by isntruction 0x00, described in the ssd1306 datasheet section 10.1.3 & 10.1.4
+    // so the command below states: do horizontal addressing (0x00), set the column address (0x21), start at col 0x00 and end at
+    // column 0x7F (col0 - col127)
     uint8_t col_cmd[] = {0x00, 0x21, 0x00, 0x7F};
     i2c_driver_write(i2c_num, slave_addr, col_cmd, sizeof(col_cmd));
 
-    // set page address 0 to 7
+    // this command specifies horizontal addressing as well, page addressing, start at page 0x00 and end at 0x07
     uint8_t page_cmd[] = {0x00, 0x22, 0x00, 0x07};
     i2c_driver_write(i2c_num, slave_addr, page_cmd, sizeof(page_cmd));
 
@@ -171,5 +164,19 @@ void app_main(void)
         remaining -= to_send;
     }
 
+    // set the column and page address of where the character should apprear:
+    uint8_t col_char[] = {0x00, 0x21, 0x00, 0x7F};
+    i2c_driver_write(i2c_num, slave_addr, col_char, sizeof(col_char));
 
+    uint8_t page_char[] = {0x00, 0x22, 0x00, 0x00};
+    i2c_driver_write(i2c_num, slave_addr, page_char, sizeof(page_char));
+
+
+    const char *char_to_send = "HELLOWORLD";
+    uint8_t char_buf[9];
+    for(int i = 0; i < strlen(char_to_send); i++){
+        char_buf[0] = 0x40; // data mode control byte
+        memcpy(char_buf + 1, &font[INDEX(char_to_send[i])], 8);
+        i2c_driver_write(i2c_num, slave_addr, char_buf, 9);
+    }
 }
