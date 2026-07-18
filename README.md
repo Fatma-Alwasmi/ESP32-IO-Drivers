@@ -87,13 +87,70 @@ During development, several non-obvious issues required hardware-level debugging
 - GPIO8 and GPIO7 (the pins labeled TX/RX on the Feather V2) are internally connected to the ESP32's flash interface and cannot be used as general purpose IO. GPIO25 and GPIO26 were used instead.
 
 ---
+### I2C Master Driver
+ 
+An interrupt-driven I2C master driver for the ESP32, validated by driving an SSD1306 OLED display.
 
-## Planned drivers
-
-- I2C
-- SPI
-
----
+#### Hardware setup
+ 
+- Board: Adafruit ESP32 Feather V2
+- SDA pin: GPIO22 (STEMMA QT port)
+- SCL pin: GPIO20 (STEMMA QT port)
+- Device: SSD1306 128x64 OLED display connected via STEMMA QT cable
+#### Project structure
+ 
+```
+esp-IO-drivers/
+    components/
+        i2c_driver/
+            include/
+                i2c_driver.h        # Public API
+            i2c_driver.c            # Driver implementation and ISR
+            CMakeLists.txt
+    main/
+        main.c                      # SSD1306 display test
+        CMakeLists.txt
+    CMakeLists.txt
+    sdkconfig
+```
+ 
+#### Public API
+ 
+```c
+// Initialize the I2C master driver with the given configuration
+esp_err_t i2c_driver_init(i2c_port_t i2c_num, i2c_driver_config_t *config);
+ 
+// Write data to a slave device
+// Returns ESP_OK, ESP_ERR_NOT_FOUND (NACK), or ESP_ERR_TIMEOUT
+esp_err_t i2c_driver_write(i2c_port_t i2c_num, uint8_t slave_addr, uint8_t *buf, size_t len);
+ 
+// Read data from a slave device
+// Returns number of bytes read, or -1 on error/timeout
+int i2c_driver_read(i2c_port_t i2c_num, uint8_t slave_addr, uint8_t *buf, size_t len, TickType_t timeout);
+ 
+// Deinitialize the driver and release all resources
+esp_err_t i2c_driver_delete(i2c_port_t i2c_num);
+```
+ 
+#### Configuration
+ 
+```c
+i2c_driver_config_t config = {
+    .freq_hz       = 400000,   // 400kHz fast mode
+    .sda_pin       = GPIO_NUM_22,
+    .scl_pin       = GPIO_NUM_20,
+    .sda_pullup_en = false,    // external pull-ups on STEMMA QT
+    .scl_pullup_en = false,
+};
+```
+ 
+#### SSD1306 validation
+ 
+The driver was validated by driving an SSD1306 128x64 OLED display. The test in `main.c`:
+ 
+1. Sends a 25-byte initialization command sequence to configure the display — setting horizontal memory addressing mode, multiplex ratio, COM pin configuration, clock divide ratio, charge pump, contrast, and turning the display on
+2. Clears the display by setting column (0-127) and page (0-7) address pointers then writing 1024 zero bytes as pixel data in 31-byte chunks
+3. Renders text by mapping ASCII characters to 8-byte font bitmaps and writing them sequentially to display RAM, with the display's internal pointer auto-advancing in horizontal addressing mode
 
 ## Environment
 
